@@ -3,12 +3,13 @@
 // Результат записать обратно
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
+using System.Collections.Concurrent;
 
 BenchmarkRunner.Run<EvenOdd>();
 
 public class EvenOdd
 {
-    [Params(10000)]
+    [Params(100_000)]
     public int n;
     private readonly int max = 100;
 
@@ -168,6 +169,11 @@ public class EvenOdd
     {
         Random r = new();
         var l = Enumerable.Range(0, n).Select(x => r.Next(max)).ToList();
+        //var l = new ConcurrentBag<int>();
+        //for (int i = 0; i < n; i++)
+        //{
+        //    l.Add(r.Next(max));
+        //}
         var l2 = from x in l.AsParallel()
                  where x % 2 == 0
                  orderby x
@@ -180,5 +186,6 @@ public class EvenOdd
         l = [.. l2, .. l1];
 
         return l;
+        //return l.ToList();
     }
 }
