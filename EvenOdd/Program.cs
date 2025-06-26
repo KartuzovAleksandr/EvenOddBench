@@ -9,7 +9,7 @@ BenchmarkRunner.Run<EvenOdd>();
 
 public class EvenOdd
 {
-    [Params(100_000)]
+    [Params(100_000, 1_000_000)]
     public int n;
     private readonly int max = 100;
 
