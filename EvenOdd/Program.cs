@@ -9,7 +9,7 @@ BenchmarkRunner.Run<EvenOdd>();
 
 public class EvenOdd
 {
-    [Params(100_000, 1_000_000)]
+    [Params(1_000)]
     public int n;
     private readonly int max = 100;
 
@@ -153,8 +153,8 @@ public class EvenOdd
         {
             l.Add(r.Next(max));
         }
-        ConcurrentBag<int> l2 = new(l);
-        ConcurrentBag<int> l1 = new(l);
+        ConcurrentBag<int> l2 = new();
+        ConcurrentBag<int> l1 = new();
         Parallel.ForEach(l, x =>
         {
             if (x % 2 == 0)
@@ -165,18 +165,8 @@ public class EvenOdd
             if (x % 2 != 0)
                 l1.Add(x);
         });
-        //l2.Where(x => x % 2 == 0);
-        //l1.Where(x => x % 2 != 0);
         l2.OrderBy(x => x).ToList();
         l1.OrderByDescending(x => x).ToList();
-        //var l2 = l.AsParallel()
-        //            .Where(n => n % 2 == 0)
-        //            .OrderBy(n => n)
-        //            .ToList();
-        //var l1 = l.AsParallel()
-        //            .Where(n => n % 2 != 0)
-        //            .OrderByDescending(n => n)
-        //            .ToList();
         l = [.. l2, .. l1];
         return l.ToList();
     }
@@ -223,6 +213,5 @@ public class EvenOdd
         l = [.. l2, .. l1];
 
         return l;
-        //return l.ToList();
     }
 }
