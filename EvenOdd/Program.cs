@@ -28,7 +28,7 @@ public class EvenOdd
     [GlobalSetup]
     public void Setup()
     {
-        var r = new Random();
+        var r = new Random(42);
         l = [.. Enumerable.Range(0, n).Select(x => r.Next(max))];
         m = l.ToArray();
     }
@@ -194,7 +194,7 @@ public class EvenOdd
     }
 
     [Benchmark]
-    public int[] EvenOddArrayParallelSort()
+    public int[] EvenOddArraySpanParallelInvokeSort()
     {
         // int[] arr = (int[])m.Clone(); // копия массива, если нельзя мутировать
         // будет немного быстрее через Span<T>
@@ -417,7 +417,7 @@ public class EvenOdd
     }
 
     [Benchmark]
-    public int[] EvenOddTasksArrayPool()
+    public int[] EvenOddTasksArrayPoolParallelInvokeSort()
     {
         int taskCount = Environment.ProcessorCount;
         var tasks = new List<Task<(int[] evens, int countEvens, int[] odds, int countOdds)>>();
@@ -481,10 +481,15 @@ public class EvenOdd
             ArrayPool<int>.Shared.Return(oddBuf);
         }
 
-        // Сортируем
-        Array.Sort(allEvens);
-        Array.Sort(allOdds);
-        Array.Reverse(allOdds);
+        // Сортируем параллельно
+        Parallel.Invoke(
+            () => Array.Sort(allEvens),
+            () =>
+            {
+                Array.Sort(allOdds);
+                Array.Reverse(allOdds);
+            }
+            );
 
         // Результат
         var result = new int[n];
@@ -530,7 +535,7 @@ public class EvenOdd
     }
 
     [Benchmark]
-    public List<int> EvenOddPLINQParallelSort()
+    public List<int> EvenOddLINQParallelInvokeSort()
     {
         // все таки фильтрация лучше без распараллеливания
         var evens = l.Where(x => x % 2 == 0).ToList();
