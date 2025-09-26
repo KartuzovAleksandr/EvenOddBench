@@ -340,6 +340,48 @@ public class EvenOdd
     }
 
     [Benchmark]
+    public int[] EvenOddForEachPartitioner()
+    {
+        var evens = new List<int>();
+        var odds = new List<int>();
+        var lockObj = new object();
+
+        var rangePartitioner = Partitioner.Create(0, m.Length);
+        Parallel.ForEach(rangePartitioner, range =>
+        {
+            var localEvens = new List<int>();
+            var localOdds = new List<int>();
+
+            for (int i = range.Item1; i < range.Item2; i++)
+            {
+                if (m[i] % 2 == 0)
+                    localEvens.Add(m[i]);
+                else
+                    localOdds.Add(m[i]);
+            }
+
+            lock (lockObj)
+            {
+                evens.AddRange(localEvens);
+                odds.AddRange(localOdds);
+            }
+        });
+
+        Parallel.Invoke(
+            () => evens.Sort(),
+            () =>
+            {
+                odds.Sort();
+                odds.Reverse();
+            });
+
+        var result = new int[n];
+        evens.CopyTo(result, 0);
+        odds.CopyTo(result, evens.Count);
+        return result;
+    }
+
+    [Benchmark]
     public List<int> EvenOddList()
     {
         //Random r = new();
