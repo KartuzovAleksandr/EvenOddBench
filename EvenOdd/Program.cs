@@ -13,6 +13,11 @@ using BenchmarkDotNet.Running;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Numerics;
+// ILGPU
+using ILGPU;
+using ILGPU.Algorithms;
+using ILGPU.Runtime;
+using ILGPU.Runtime.Cuda;
 
 BenchmarkRunner.Run<EvenOdd>();
 
@@ -768,5 +773,125 @@ public class EvenOdd
         Array.Reverse(arr, evenCount, n - evenCount);
 
         return arr;
+    }
+
+    [Benchmark]
+    //Как это работает
+    //Фильтрация (FilterEvenOddKernel)
+    //Каждый поток обрабатывает один элемент input[index].
+    //Если value & 1 == 0 — чётное, пишем в evens и увеличиваем counts[0] атомарно.
+    //Иначе — нечётное, пишем в odds и увеличиваем counts[1].
+    //Сортировка
+    //RadixSort<int> — эффективная GPU-сортировка.
+    //Сортируем evens и odds по возрастанию.
+    //Реверс нечётных
+    //Ядро ReverseKernel разворачивает odds на месте, чтобы получить убывание.
+    //Результат
+    //Копируем evens и odds обратно в result:
+    //result[0..evenCount] = отсортированные чётные.
+    //result[evenCount..] = отсортированные нечётные (по убыванию).
+    //Ограничения и советы
+    //Требуется CUDA-совместимая видеокарта и установленный CUDA Runtime.
+    //Для CPU-тестирования можно заменить CreateCudaAccelerator на CreateCPUAccelerator.
+    //При n < 100K ILGPU может быть медленнее из-за накладных расходов на передачу данных GPU ↔ CPU.
+    //Для очень больших массивов (1M+) ILGPU покажет максимальный прирост.
+    public int[] EvenOddILGPU()
+    {
+        // Создаём контекст и акселератор (CUDA)
+        using var context = Context.CreateDefault();
+        using var accelerator = context.CreateCudaAccelerator(0); // 0 — первый GPU
+
+        // Выделяем буферы на GPU
+        using var source = accelerator.Allocate1D<int>(m);
+        using var evens = accelerator.Allocate1D<int>(n);
+        using var odds = accelerator.Allocate1D<int>(n);
+        using var counts = accelerator.Allocate1D<int>(2); // [evenCount, oddCount]
+
+        // Инициализируем счётчики
+        counts.MemSetToZero();
+
+        // Фильтрация: чётные в evens, нечётные в odds
+        // Загружаем ядро с использованием DefaultStream
+        var filterKernel = accelerator.LoadAutoGroupedStreamKernel
+            <Index1D, ArrayView<int>, ArrayView<int>, ArrayView<int>, 
+            ArrayView<int>>(FilterEvenOddKernel);
+        // Запускаем: extent + аргументы (без stream)
+        filterKernel((Index1D)m.Length, source.View, evens.View, odds.View, counts.View);
+
+        // Синхронизация и копирование счётчиков
+        accelerator.Synchronize();
+        // Читаем счётчики
+        var hostCounts = counts.GetAsArray1D();
+        int evenCount = hostCounts[0];
+        int oddCount = hostCounts[1];
+
+        // Копируем чётные/нечётные на CPU и сортируем там
+
+        // получаем весь массив
+        var allEvens = evens.GetAsArray1D();
+        var allOdds = odds.GetAsArray1D();
+
+        // используем только первую часть, где есть данные
+        var hostEvens = new int[evenCount];
+        Array.Copy(allEvens, 0, hostEvens, 0, evenCount);
+
+        var hostOdds = new int[oddCount];
+        Array.Copy(allOdds, 0, hostOdds, 0, oddCount);
+
+        Parallel.Invoke(
+            () => Array.Sort(hostEvens), // чётные по возрастанию
+            () =>
+            {
+                Array.Sort(hostOdds);
+                Array.Reverse(hostOdds); // нечётные по убыванию
+            });
+
+        // 5. Собираем результат
+        var result = new int[n];
+        Array.Copy(hostEvens, 0, result, 0, evenCount);
+        Array.Copy(hostOdds, 0, result, evenCount, oddCount);
+
+        return result;
+    }
+
+    // Ядро: фильтрация чётных/нечётных
+    static void FilterEvenOddKernel(
+        Index1D index,
+        ArrayView<int> input,
+        ArrayView<int> evens,
+        ArrayView<int> odds,
+        ArrayView<int> counts)
+    {
+        if (index >= input.Length) return;
+
+        int value = input[index];
+        if ((value & 1) == 0) // чётное
+        {
+            ref int evenCounter = ref counts[0];
+            int pos = ILGPU.Atomic.Add(ref evenCounter, 1);
+            evens[pos] = value;
+        }
+        else // нечётное
+        {
+            ref int oddCounter = ref counts[1];
+            int pos = ILGPU.Atomic.Add(ref oddCounter, 1);
+            odds[pos] = value;
+        }
+    }
+
+    // Ядро: реверс массива
+    static void ReverseKernel(Index1D length, ArrayView<int> data)
+    {
+        Index1D i = new Index1D(0);
+        Index1D j = length - 1;
+
+        while (i < j)
+        {
+            int temp = data[i];
+            data[i] = data[j];
+            data[j] = temp;
+            i++;
+            j--;
+        }
     }
 }

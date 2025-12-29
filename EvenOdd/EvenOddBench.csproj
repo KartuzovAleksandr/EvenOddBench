@@ -10,6 +10,8 @@
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
     <PackageReference Include="BenchmarkDotNet.Annotations" Version="0.15.8" />
+    <PackageReference Include="ILGPU" Version="1.5.3" />
+    <PackageReference Include="ILGPU.Algorithms" Version="1.5.3" />
   </ItemGroup>
 
 </Project>
