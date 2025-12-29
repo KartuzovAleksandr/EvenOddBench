@@ -12,9 +12,12 @@ using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Numerics;
 
 BenchmarkRunner.Run<EvenOdd>();
 
+[WarmupCount(1)]
+[IterationCount(3)]
 public class EvenOdd
 {
     [Params(1_000_000)]
@@ -340,44 +343,77 @@ public class EvenOdd
     }
 
     [Benchmark]
+    /// <summary>
+    /// Разделяет массив на четные и нечетные числа с использованием Parallel.ForEach и Partitioner.
+    /// Четные числа сортируются по возрастанию, нечетные - по убыванию.
+    /// Результат: четные числа в начале массива, нечетные в конце.
+    /// </summary>
+    /// <returns>Отсортированный массив по правилу четные(возр.) + нечетные(убыв.)</returns>
     public int[] EvenOddForEachPartitioner()
     {
-        var evens = new List<int>();
-        var odds = new List<int>();
-        var lockObj = new object();
+        // Создаем общие коллекции для хранения результатов всех потоков
+        var evens = new List<int>();      // Четные числа (будут отсортированы по возрастанию)
+        var odds = new List<int>();       // Нечетные числа (будут отсортированы по убыванию)
+        // Объект для синхронизации доступа к общим коллекциям
+        var lockObj = new object();       
 
+        // Используем ConcurrentBag для потокобезопасного накопления результатов
+        // ConcurrentBag<T> оптимизирован для сценариев, где один поток производит и потребляет,
+        // а другие потоки только добавляют (Add) — это как раз наш случай.
+        //var evens = new ConcurrentBag<int>();
+        //var odds = new ConcurrentBag<int>();
+
+        // Создаем партиционер для равномерного распределения диапазона [0, m.Length) по потокам
+        // Partitioner.Create(0, m.Length) автоматически разбивает диапазон на оптимальные куски
         var rangePartitioner = Partitioner.Create(0, m.Length);
+
+        // Параллельная обработка диапазонов с использованием Partitioner
         Parallel.ForEach(rangePartitioner, range =>
         {
+            // Локальные коллекции для текущего потока — избегаем обращений к общим коллекциям
+            // Это уменьшает конкуренцию и повышает производительность
             var localEvens = new List<int>();
             var localOdds = new List<int>();
 
+            // Последовательная обработка элементов в диапазоне [range.Item1, range.Item2)
             for (int i = range.Item1; i < range.Item2; i++)
             {
                 if (m[i] % 2 == 0)
-                    localEvens.Add(m[i]);
+                    localEvens.Add(m[i]);  // Четное число
                 else
-                    localOdds.Add(m[i]);
+                    localOdds.Add(m[i]);   // Нечетное число
             }
 
+            // Критическая секция: безопасное объединение локальных результатов с глобальными
+            // Lock гарантирует, что только один поток одновременно модифицирует общие коллекции
             lock (lockObj)
             {
-                evens.AddRange(localEvens);
-                odds.AddRange(localOdds);
+                evens.AddRange(localEvens);   // Добавляем четные числа
+                odds.AddRange(localOdds);     // Добавляем нечетные числа
             }
+            // Добавляем локальные результаты в общие ConcurrentBag-и
+            // Add в ConcurrentBag потокобезопасен, блокировок не нужно
+            //foreach (int x in localEvens)
+            //    evens.Add(x);
+            //foreach (int x in localOdds)
+            //    odds.Add(x);
+            // !!! Но тогда его не сможем Sort - надо кидать обратно в Array или List 
         });
 
+        // Параллельная сортировка двух независимых коллекций
+        // Parallel.Invoke запускает действия параллельно, используя пул потоков
         Parallel.Invoke(
-            () => evens.Sort(),
+            () => evens.Sort(),   // Сортировка четных по возрастанию
             () =>
             {
-                odds.Sort();
-                odds.Reverse();
+                odds.Sort();      // Сначала сортируем нечетные по возрастанию
+                odds.Reverse();   // Затем разворачиваем для убывания
             });
 
-        var result = new int[n];
-        evens.CopyTo(result, 0);
-        odds.CopyTo(result, evens.Count);
+        // Формируем итоговый массив: четные + нечетные
+        var result = new int[n];                    // Предполагается, что n == m.Length
+        evens.CopyTo(result, 0);                    // Копируем четные в начало
+        odds.CopyTo(result, evens.Count);           // Копируем нечетные после четных
         return result;
     }
 
@@ -404,58 +440,142 @@ public class EvenOdd
     }
 
     [Benchmark]
+    //public List<int> EvenOddTasksLists()
+    //{
+    //    // определяем кол-во процессоров
+    //    int taskCount = Environment.ProcessorCount; // или любое другое число
+    //    var tasks = new List<Task<(List<int> evens, List<int> odds)>>();
+
+    //    // размер куска (порции)
+    //    int chunkSize = (int)Math.Ceiling((double)l.Count / taskCount);
+    //    for (int i = 0; i < taskCount; i++)
+    //    {
+    //        int start = i * chunkSize;
+    //        int end = Math.Min(start + chunkSize, l.Count);
+
+    //        tasks.Add(Task.Run(() =>
+    //        {
+    //            var localEvens = new List<int>();
+    //            var localOdds = new List<int>();
+
+    //            for (int j = start; j < end; j++)
+    //            {
+    //                if (l[j] % 2 == 0)
+    //                    localEvens.Add(l[j]);
+    //                else
+    //                    localOdds.Add(l[j]);
+    //            }
+
+    //            return (localEvens, localOdds);
+    //        }));
+    //    }
+
+    //    // Ждём завершения всех задач
+    //    Task.WhenAll(tasks.ToArray());
+
+    //    // Собираем результаты
+    //    var allEvens = new List<int>();
+    //    var allOdds = new List<int>();
+
+    //    foreach (var task in tasks)
+    //    {
+    //        var result = task.Result;
+    //        allEvens.AddRange(result.evens);
+    //        allOdds.AddRange(result.odds);
+    //    }
+
+    //    // Сортируем как обычную коллекцию или LINQ
+    //    allEvens.Sort(); // или OrderBy(x => x).ToList()
+    //    allOdds.Sort((a, b) => b.CompareTo(a)); // или OrderByDescending(x => x).ToList()
+
+    //    // результат
+    //    List<int> lresult = new(n);
+    //    lresult = [.. allEvens, .. allOdds];
+    //    return lresult;
+    //}
+
+    // Ключевые изменения с TaskFactory:
+    // - Контроль пула потоков - TaskFactory позволяет настраивать параметры ThreadPool
+    // - StartNew вместо Run - более явный контроль над созданием задач
+    // - Настраиваемые параметры - можно добавить TaskCreationOptions.LongRunning для долгих задач
+    // Преимущества TaskFactory:
+    // Точная настройка планировщика задач
+    // - Возможность отмены через CancellationToken
+    // - Лучший контроль над опциями создания задач
+    // - Поддержка кастомных TaskScheduler
     public List<int> EvenOddTasksLists()
     {
-        // определяем кол-во процессоров
-        int taskCount = Environment.ProcessorCount; // или любое другое число
+        // Определяем количество потоков/задач на основе числа процессоров
+        int taskCount = Environment.ProcessorCount;
         var tasks = new List<Task<(List<int> evens, List<int> odds)>>();
 
-        // размер куска (порции)
+        // Вычисляем размер порции данных для каждой задачи (равномерное распределение)
         int chunkSize = (int)Math.Ceiling((double)l.Count / taskCount);
+
+        // Создаем TaskFactory для контроля пула потоков (по умолчанию ThreadPool)
+        // Создаем TaskFactory с правильным порядком аргументов:
+        // 1. CancellationToken (по умолчанию - None)
+        // 2. TaskCreationOptions (по умолчанию - None)
+        // 3. TaskContinuationOptions (по умолчанию - None)
+        // 4. TaskScheduler (по умолчанию - ThreadPool)
+        var taskFactory = new TaskFactory(
+            CancellationToken.None,
+            TaskCreationOptions.None,
+            TaskContinuationOptions.None,
+            TaskScheduler.Default);
+
+        // Создаем задачи через TaskFactory.StartNew вместо Task.Run
         for (int i = 0; i < taskCount; i++)
         {
+            // Фиксируем значения start/end для захвата в замыкание (closure)
             int start = i * chunkSize;
             int end = Math.Min(start + chunkSize, l.Count);
 
-            tasks.Add(Task.Run(() =>
-            {
-                var localEvens = new List<int>();
-                var localOdds = new List<int>();
+            // Используем StartNew<TResult> для функции, возвращающей кортеж
+            // Явно указываем TResult — кортеж (List<int>, List<int>)
+            Task<(List<int> evens, List<int> odds)> task = taskFactory.StartNew(
+                    () =>
+                    {
+                        // Локальные коллекции для результата текущей задачи
+                        var localEvens = new List<int>();
+                        var localOdds = new List<int>();
 
-                for (int j = start; j < end; j++)
-                {
-                    if (l[j] % 2 == 0)
-                        localEvens.Add(l[j]);
-                    else
-                        localOdds.Add(l[j]);
-                }
+                        // Обрабатываем порцию данных параллельно
+                        for (int j = start; j < end; j++)
+                        {
+                            if (l[j] % 2 == 0)
+                                localEvens.Add(l[j]);
+                            else
+                                localOdds.Add(l[j]);
+                        }
 
-                return (localEvens, localOdds);
-            }));
+                        return (localEvens, localOdds);  // возвращаем кортеж
+                    }
+                );
+            // добавляем задачи
+            tasks.Add(task);  // теперь тип совпадает: Task<(List<int>, List<int>)>
         }
-
-        // Ждём завершения всех задач
-        Task.WhenAll(tasks.ToArray());
-
-        // Собираем результаты
+        // Ожидаем завершения ВСЕХ задач параллельно
+        Task.WhenAll(tasks.ToArray()).Wait();
+        // Собираем результаты из всех задач
         var allEvens = new List<int>();
         var allOdds = new List<int>();
 
         foreach (var task in tasks)
         {
-            var result = task.Result;
-            allEvens.AddRange(result.evens);
-            allOdds.AddRange(result.odds);
+            var (evens, odds) = task.Result;  // Деструктуризация кортежа
+            allEvens.AddRange(evens);
+            allOdds.AddRange(odds);
         }
 
-        // Сортируем как обычную коллекцию или LINQ
-        allEvens.Sort(); // или OrderBy(x => x).ToList()
-        allOdds.Sort((a, b) => b.CompareTo(a)); // или OrderByDescending(x => x).ToList()
+        // Сортируем результаты:
+        // Четные - по возрастанию
+        // Нечетные - по убыванию
+        allEvens.Sort();
+        allOdds.Sort((a, b) => b.CompareTo(a));
 
-        // результат
-        List<int> lresult = new(n);
-        lresult = [.. allEvens, .. allOdds];
-        return lresult;
+        // Объединяем результаты в финальный список
+        return [.. allEvens, .. allOdds];
     }
 
     [Benchmark]
@@ -595,5 +715,58 @@ public class EvenOdd
             });
 
         return [.. evens, .. odds];
+    }
+
+    [Benchmark]
+    public int[] EvenOddSIMD()
+    {
+        // Копируем массив
+        int[] arr = new int[n];
+        m.AsSpan().CopyTo(arr);
+
+        // Разделяем на чётные/нечётные in-place
+        int evenCount = 0;
+        int i = 0;
+        int vectorSize = Vector<int>.Count;
+
+        // SIMD-цикл: обрабатываем по вектору
+        for (; i <= n - vectorSize; i += vectorSize)
+        {
+            var v = new Vector<int>(arr, i);
+
+            // Создаём вектор с единицами: [1, 1, 1, ...]
+            var one = Vector<int>.One;
+            // Побитовое И: v & 1 → 0 для чётных, 1 для нечётных
+            var remainder = Vector.BitwiseAnd(v, one);
+            // Сравниваем с нулём: remainder == 0 → true для чётных
+            var isEven = Vector.Equals(remainder, Vector<int>.Zero);
+
+            // Применяем маску: чётные в начало
+            for (int j = 0; j < vectorSize; j++)
+            {
+                if (isEven[j] != 0)
+                {
+                    (arr[i + j], arr[evenCount]) = (arr[evenCount], arr[i + j]);
+                    evenCount++;
+                }
+            }
+        }
+
+        // Остаток — обычным циклом
+        for (; i < n; i++)
+        {
+            if (arr[i] % 2 == 0)
+            {
+                (arr[i], arr[evenCount]) = (arr[evenCount], arr[i]);
+                evenCount++;
+            }
+        }
+
+        // Сортируем чётные и нечётные
+        Array.Sort(arr, 0, evenCount);
+        Array.Sort(arr, evenCount, n - evenCount);
+        Array.Reverse(arr, evenCount, n - evenCount);
+
+        return arr;
     }
 }
