@@ -797,10 +797,19 @@ public class EvenOdd
     //Для очень больших массивов (1M+) ILGPU покажет максимальный прирост.
     public int[] EvenOddILGPU()
     {
-        // Создаём контекст и акселератор (CUDA)
-        using var context = Context.CreateDefault();
-        using var accelerator = context.CreateCudaAccelerator(0); // 0 — первый GPU
-
+        // Создаём контекст, включающий все ускорители (в т.ч. CUDA)
+        using Context context = Context.Create(builder => builder.AllAccelerators());
+        // Теперь можно безопасно получить CUDA-устройства
+        var cudaDevices = context.GetCudaDevices();
+        CudaAccelerator accelerator;
+        accelerator = cudaDevices.Count switch
+        {
+            1 => accelerator = context.CreateCudaAccelerator(0),
+            2 => accelerator = context.CreateCudaAccelerator(1),
+            _ => throw new InvalidOperationException("Нет CUDA-устройств")
+        };
+        // создаем акселератор
+        //accelerator = context.CreateCudaAccelerator(0);
         // Выделяем буферы на GPU
         using var source = accelerator.Allocate1D<int>(m);
         using var evens = accelerator.Allocate1D<int>(n);
@@ -826,6 +835,7 @@ public class EvenOdd
         int oddCount = hostCounts[1];
 
         // Копируем чётные/нечётные на CPU и сортируем там
+        // в CUDA не удалось вызвать метод RadixSort (говорят есть)
 
         // получаем весь массив
         var allEvens = evens.GetAsArray1D();
@@ -876,22 +886,6 @@ public class EvenOdd
             ref int oddCounter = ref counts[1];
             int pos = ILGPU.Atomic.Add(ref oddCounter, 1);
             odds[pos] = value;
-        }
-    }
-
-    // Ядро: реверс массива
-    static void ReverseKernel(Index1D length, ArrayView<int> data)
-    {
-        Index1D i = new Index1D(0);
-        Index1D j = length - 1;
-
-        while (i < j)
-        {
-            int temp = data[i];
-            data[i] = data[j];
-            data[j] = temp;
-            i++;
-            j--;
         }
     }
 }
